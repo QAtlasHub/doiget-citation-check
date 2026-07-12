@@ -1,0 +1,118 @@
+name: 'doiget Citation Check'
+description: 'Verify every DOI / arXiv id in a BibTeX file resolves to real metadata (Crossref / arXiv) via doiget, gate on broken or unverified references, and post a sticky PR comment.'
+author: 'QAtlasHub'
+branding:
+  icon: 'check-circle'
+  color: 'blue'
+
+inputs:
+  bib:
+    description: 'Path to the BibTeX bibliography to verify.'
+    required: false
+    default: 'docs/references.bib'
+  allow:
+    description: 'Path to the allow-list of acknowledged-broken references (one DOI/arXiv id or bibkey per line; # starts a comment with the reason).'
+    required: false
+    default: 'docs/references.allow'
+  doiget-version:
+    description: 'doiget release tag whose prebuilt binary is downloaded.'
+    required: false
+    default: 'v0.8.6'
+  comment:
+    description: 'Post the result as a sticky PR comment (pull_request events only).'
+    required: false
+    default: 'true'
+  token:
+    description: 'GitHub token used to post the PR comment.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  broken:
+    description: 'Broken references (unresolved / malformed, not allow-listed).'
+    value: ${{ steps.gate.outputs.broken }}
+  unverified:
+    description: 'References with no verify record (the check did not run).'
+    value: ${{ steps.gate.outputs.unverified }}
+  fail:
+    description: 'Total gated failures (broken + unverified).'
+    value: ${{ steps.gate.outputs.fail }}
+  ok:
+    description: 'References that resolved cleanly.'
+    value: ${{ steps.gate.outputs.ok }}
+
+runs:
+  using: composite
+  steps:
+    - name: Cache doiget resolver
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/doiget
+        key: doiget-resolver-${{ hashFiles(inputs.bib) }}
+        restore-keys: doiget-resolver-
+
+    - name: Install doiget (prebuilt release binary)
+      shell: bash
+      env:
+        DOIGET_VERSION: ${{ inputs.doiget-version }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)   asset="doiget-linux-x86_64" ;;
+          macOS-X64)   asset="doiget-macos-x86_64" ;;
+          macOS-ARM64) asset="doiget-macos-aarch64" ;;
+          *) echo "::error::Unsupported runner ${RUNNER_OS}-${RUNNER_ARCH} — no doiget prebuilt binary."; exit 1 ;;
+        esac
+        base="https://github.com/QAtlasHub/doiget/releases/download/${DOIGET_VERSION}"
+        dir="${RUNNER_TEMP}/doiget-bin"
+        mkdir -p "$dir"
+        curl -fsSL "${base}/${asset}"        -o "${dir}/doiget"
+        curl -fsSL "${base}/${asset}.sha256" -o "${dir}/doiget.sha256"
+        # the .sha256 asset is "<hash>  <name>"; re-point it at our download and verify
+        echo "$(awk '{print $1}' "${dir}/doiget.sha256")  ${dir}/doiget" | sha256sum -c -
+        chmod +x "${dir}/doiget"
+        echo "$dir" >> "$GITHUB_PATH"
+
+    - name: Verify references + gate
+      id: gate
+      shell: bash
+      env:
+        BIB: ${{ inputs.bib }}
+        ALLOW: ${{ inputs.allow }}
+      run: |
+        set -uo pipefail
+        # doiget's own exit code is intentionally ignored — the bundled gate
+        # script (verify_references_gate.py) is the sole authority on pass/fail.
+        doiget verify "$BIB" --format auto --mode json > verify.jsonl || true
+        python3 "${{ github.action_path }}/verify_references_gate.py" \
+          --bib "$BIB" --allow "$ALLOW" \
+          --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || true
+        cat report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+    - name: Sticky PR comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      continue-on-error: true
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const fs = require('fs');
+          let body;
+          try { body = fs.readFileSync('report.md', 'utf8'); } catch { return; }
+          const marker = '<!-- verify-references-gate -->';
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+          const existing = comments.find((c) => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }
+
+    - name: Gate — fail on broken / unverified references
+      if: ${{ steps.gate.outputs.fail != '0' && steps.gate.outputs.fail != '' }}
+      shell: bash
+      run: |
+        echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record)."
+        exit 1
