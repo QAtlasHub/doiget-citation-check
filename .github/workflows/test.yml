@@ -1,0 +1,23 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cc
+        uses: ./
+        with:
+          bib: test/references.bib
+          allow: test/references.allow
+          comment: 'false'
+      - name: Assert the two valid DOIs pass the gate
+        run: |
+          echo "ok=${{ steps.cc.outputs.ok }} broken=${{ steps.cc.outputs.broken }} unverified=${{ steps.cc.outputs.unverified }} fail=${{ steps.cc.outputs.fail }}"
+          test "${{ steps.cc.outputs.fail }}" = "0"
