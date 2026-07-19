@@ -66,6 +66,28 @@ def bib_keys(path):
     return keys
 
 
+# A valid BibTeX cite key: a letter, then letters/digits/`:_.+-/` — no whitespace, no leading
+# digit. A malformed key (e.g. a leading space, `@article{ Key,`) still PASSES verification because
+# `_ENTRY_RE`'s `\{\s*` silently strips the whitespace, but DocumenterCitations then rejects the
+# entry ("the entry key is invalid") and every `[Key](@cite)` to it fails "not found", terminating
+# the docs build. Validate the RAW key text so the defect is caught HERE instead of at doc-build time.
+_RAW_ENTRY_RE = re.compile(r"^@(\w+)\s*\{([^,}\n]*)", re.IGNORECASE | re.MULTILINE)
+_VALID_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9:_.+/-]*$")
+
+
+def malformed_keys(path):
+    """Reference entry keys that are not a well-formed BibTeX key (whitespace / bad char)."""
+    bad = []
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            for m in _RAW_ENTRY_RE.finditer(fh.read()):
+                if m.group(1).lower() in _NON_REF_TYPES:
+                    continue
+                if not _VALID_KEY_RE.match(m.group(2)):
+                    bad.append(m.group(2))
+    return bad
+
+
 def detail_of(entry):
     err = entry.get("error")
     if isinstance(err, dict):
@@ -73,7 +95,7 @@ def detail_of(entry):
     return ""
 
 
-def render(ok, transient, excepted, broken, unverified):
+def render(ok, transient, excepted, broken, unverified, malformed=()):
     out = ["<!-- verify-references-gate -->", "## Reference check — `doiget verify`", ""]
     out.append(f"- ✅ resolved: **{len(ok)}**")
     if transient:
@@ -83,6 +105,8 @@ def render(ok, transient, excepted, broken, unverified):
     out.append(f"- {'❌' if broken else '☑️'} broken (unresolved / malformed): **{len(broken)}**")
     if unverified:
         out.append(f"- ❌ unverified (no record — check did not run): **{len(unverified)}**")
+    if malformed:
+        out.append(f"- ❌ malformed bib keys (invalid — DocumenterCitations will reject): **{len(malformed)}**")
     out.append("")
 
     def table(title, rows):
@@ -120,6 +144,18 @@ def render(ok, transient, excepted, broken, unverified):
             "or could not parse it, so it was **never checked**. Re-run the job; if it "
             "persists, the bibliography entry is malformed. This is not allowlistable — "
             "the point is that every reference is actually verified.",
+            "",
+        ]
+    if malformed:
+        out += ["### ❌ Malformed bibliography keys — fix the entry key", ""]
+        out += ["| raw key |", "|---|"]
+        out += [f"| `{k}` |" for k in malformed]
+        out += [
+            "",
+            "A BibTeX key with a leading/trailing space or an invalid character (e.g. "
+            "`@article{ Key,`) makes the entry unregistrable: `doiget verify` tolerates it but "
+            "DocumenterCitations rejects it and every `[key](@cite)` to it fails, breaking the "
+            "docs build. Fix the key to match `^[A-Za-z][A-Za-z0-9:_.+/-]*$`.",
             "",
         ]
     return "\n".join(out)
@@ -163,16 +199,18 @@ def main():
 
     # Completeness: every reference entry in the bib must have a verify record.
     unverified = [k for k in bib_keys(args.bib) if k.lower() not in seen]
+    malformed = malformed_keys(args.bib)
 
-    report = render(ok, transient, excepted, broken, unverified)
+    report = render(ok, transient, excepted, broken, unverified, malformed)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
             fh.write(report + "\n")
-    fail = len(broken) + len(unverified)
+    fail = len(broken) + len(unverified) + len(malformed)
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as fh:
             fh.write(
                 f"broken={len(broken)}\nunverified={len(unverified)}\n"
+                f"malformed={len(malformed)}\n"
                 f"fail={fail}\nok={len(ok)}\ntransient={len(transient)}\n"
             )
     print(report)
