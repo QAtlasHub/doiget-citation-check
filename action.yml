@@ -114,5 +114,5 @@ runs:
       if: ${{ steps.gate.outputs.fail != '0' && steps.gate.outputs.fail != '' }}
       shell: bash
       run: |
-        echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record)."
+        echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record), malformed=${{ steps.gate.outputs.malformed }} (invalid BibTeX key — DocumenterCitations will reject)."
         exit 1
