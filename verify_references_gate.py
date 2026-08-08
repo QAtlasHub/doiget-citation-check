@@ -161,6 +161,27 @@ def render(ok, transient, excepted, broken, unverified, malformed=()):
     return "\n".join(out)
 
 
+def print_report(report):
+    """Print the report without letting the console encoding decide the exit code.
+
+    The report contains non-ASCII characters (em dashes, status emoji). On a
+    console whose encoding cannot represent them — cp932 on a Japanese Windows
+    shell, or any environment with PYTHONIOENCODING=ascii — a plain print()
+    raises UnicodeEncodeError, so the gate exits non-zero even when every
+    reference resolved. The file outputs are already written with an explicit
+    encoding; make stdout equally forgiving.
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass  # stdout replaced (tests) or not reconfigurable — fall through
+    try:
+        print(report)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(report.encode(enc, "replace").decode(enc, "replace"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bib", default="", help="bibliography path, for the completeness check")
@@ -213,7 +234,7 @@ def main():
                 f"malformed={len(malformed)}\n"
                 f"fail={fail}\nok={len(ok)}\ntransient={len(transient)}\n"
             )
-    print(report)
+    print_report(report)
 
     return 1 if fail else 0
 

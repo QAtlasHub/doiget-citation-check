@@ -21,3 +21,36 @@ jobs:
         run: |
           echo "ok=${{ steps.cc.outputs.ok }} broken=${{ steps.cc.outputs.broken }} unverified=${{ steps.cc.outputs.unverified }} fail=${{ steps.cc.outputs.fail }}"
           test "${{ steps.cc.outputs.fail }}" = "0"
+
+  encoding:
+    name: Gate survives a non-UTF-8 stdout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The report contains em dashes and status emoji. Printing it to a
+      # console that cannot encode them (cp932 on a Japanese Windows shell)
+      # used to raise UnicodeEncodeError, so the gate exited non-zero with a
+      # traceback even when every reference resolved. PYTHONIOENCODING
+      # reproduces that on Linux, which makes the regression testable here.
+      - name: Clean input exits 0 under ascii / cp932 stdout
+        run: |
+          set -euo pipefail
+          echo '{"entry_key":"a","ok":true,"ref":"10.1038/s41567-020-0932-7","status":"valid"}' > clean.jsonl
+          for enc in ascii cp932 utf-8; do
+            PYTHONIOENCODING=$enc python3 verify_references_gate.py \
+              --allow /dev/null --report report.md < clean.jsonl > out.txt
+            ! grep -q Traceback out.txt
+            echo "$enc: exit 0, no traceback"
+          done
+
+      - name: Broken input still exits 1 under ascii stdout
+        run: |
+          echo '{"entry_key":"b","ok":false,"ref":"10.1103/PhysRevX.99.999999","status":"absent"}' > bad.jsonl
+          set +e
+          PYTHONIOENCODING=ascii python3 verify_references_gate.py \
+            --allow /dev/null --report report.md < bad.jsonl > /dev/null
+          code=$?
+          set -e
+          test "$code" = "1" || { echo "::error::expected exit 1, got $code"; exit 1; }
+          echo "exit 1 as expected — the gate still gates"
