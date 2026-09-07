@@ -21,6 +21,10 @@ jobs:
         run: |
           echo "ok=${{ steps.cc.outputs.ok }} broken=${{ steps.cc.outputs.broken }} unverified=${{ steps.cc.outputs.unverified }} fail=${{ steps.cc.outputs.fail }}"
           test "${{ steps.cc.outputs.fail }}" = "0"
+          # `titles` defaults on, so a run that compared nothing here is the title check gone
+          # inert against the real resolver — which passes every count assertion above.
+          echo "titles_compared=${{ steps.cc.outputs.titles_compared }} title_shorter=${{ steps.cc.outputs.title_shorter }}"
+          test "${{ steps.cc.outputs.titles_compared }}" -gt 0
 
   encoding:
     name: Gate survives a non-UTF-8 stdout
@@ -54,3 +58,118 @@ jobs:
           set -e
           test "$code" = "1" || { echo "::error::expected exit 1, got $code"; exit 1; }
           echo "exit 1 as expected — the gate still gates"
+
+  titles:
+    name: The title cross-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exactly the three wrong papers are gated, and nothing else
+        run: |
+          set -euo pipefail
+          rc=0
+          python3 verify_references_gate.py \
+            --bib test/titles/references.bib --allow /dev/null \
+            --titles test/titles/titles.jsonl --title-allow test/titles/title.allow \
+            --github-output out.txt < test/titles/verify.jsonl > report.md || rc=$?
+          cat report.md
+          test "$rc" = "1"
+          # The SET, not the count: a rule that flags the right number of the wrong entries
+          # passes a count check. WrongPaper resolves to an unrelated title; SharedOpening
+          # opens with the bibliography's whole title but continues into it, which is what
+          # separates an abbreviation from a different paper; ShortStub resolves to a title too
+          # short to be a truncation of anything in particular.
+          got=$(python3 - <<'EOF'
+          import re
+          keys, on = [], False
+          for line in open("report.md"):
+              if line.startswith("### ❌ Resolves to a different"): on = True; continue
+              if on and line.startswith("###"): break
+              m = re.match(r"\|\s*`([A-Za-z]+)`", line)
+              if on and m: keys.append(m.group(1))
+          print(",".join(sorted(keys)))
+          EOF
+          )
+          test "$got" = "SharedOpening,ShortStub,WrongPaper" || { echo "::error::gated $got"; exit 1; }
+          grep -q 'mistitled=3' out.txt
+          # The denominator, so a run that compared nothing cannot read as a run that agreed.
+          grep -q 'titles_compared=23' out.txt
+          grep -q 'title_inconclusive=2' out.txt
+          # A resolved title SHORTER than the entry's is reported, never gated: publisher
+          # truncation and an id that slipped to a shorter-titled paper are indistinguishable
+          # from the strings (measured length ratios overlap, 0.39-0.92 against 0.37-0.69).
+          grep -q 'title_shorter=3' out.txt
+          # …and `fail` counts the gated ones only, so promoting `title_shorter` into the gate
+          # moves this line and not the one above it.
+          grep -q 'fail=3' out.txt
+          # ShortStub and FloorEdge straddle the length floor under which a shorter resolved
+          # title stops being evidence of truncation: 11 characters against 12.
+          # Nested/Concat/Quoted are the parser's edge cases: a `title = {…}` written inside a
+          # `note`, BibTeX `#` concatenation, and a quoted value. All three must compare equal.
+          # CommaNest puts a comma right before the nested `title =`, which a field-separator
+          # check accepts and a brace-depth one does not; QuotedNest hides it in a quoted value,
+          # where the braces that would raise the depth belong to the string.
+          for k in Nested CommaNest QuotedNest Concat Quoted FirstField; do
+            if grep -q "| \`$k\`" report.md; then
+              echo "::error::$k was gated but must pass"; exit 1
+            fi
+          done
+
+      - name: A run that resolved no titles is not a run that agreed
+        run: |
+          set -euo pipefail
+          : > empty.jsonl
+          rc=0
+          python3 verify_references_gate.py \
+            --bib test/titles/references.bib --allow /dev/null \
+            --titles empty.jsonl --title-allow test/titles/title.allow \
+            --github-output outage.txt < test/titles/verify.jsonl > outage.md || rc=$?
+          test "$rc" = "0"
+          grep -q 'titles_compared=0' outage.txt
+          grep -q 'titles compared: \*\*0\*\*' outage.md
+          # …and it must not look like the check being switched off.
+          python3 verify_references_gate.py \
+            --bib test/titles/references.bib --allow /dev/null \
+            --github-output off.txt < test/titles/verify.jsonl > off.md
+          grep -q 'mistitled=0' off.txt
+          if diff -q outage.md off.md > /dev/null; then
+            echo "::error::an outage renders identically to the check being off"; exit 1
+          fi
+
+      - name: A crash after the counts are computed is not a pass
+        run: |
+          set -uo pipefail
+          : > crash.txt
+          # A closed stdout: print() only buffers, so this used to surface at interpreter
+          # shutdown — after `fail=0` had been written and read as a verdict.
+          # The non-zero exit is the point, and `run:` runs under `bash -e`.
+          python3 verify_references_gate.py \
+            --bib test/titles/references.bib --allow /dev/null \
+            --report crash.md --github-output crash.txt < test/titles/verify.jsonl | head -c 0 || true
+          if grep -q '^fail=' crash.txt; then
+            echo "::error::a verdict outlived the crash that stopped the run"; exit 1
+          fi
+
+      - name: A title that ran past its own field is not a title
+        run: |
+          set -euo pipefail
+          printf '@article{Ate,\n  title = {Real Part} # {Broken,\n  doi = {10.1/x},\n}\n@article{Kept, title = {A} # { Concatenated Title}, doi = {10.1/z},}\n' > ate.bib
+          got=$(python3 -c "import verify_references_gate as g; print(sorted(g.bib_titles('ate.bib')))")
+          test "$got" = "['Kept']" || { echo "::error::got $got"; exit 1; }
+
+      - name: resolve_titles survives every shape doiget can return
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/test/stub:$PATH"
+          python3 resolve_titles.py --timeout 5 < test/stub/verify.jsonl > got.jsonl
+          diff -u test/stub/expected.jsonl got.jsonl
+          # A JSON line that is not an object used to kill the process, so every entry after it
+          # got no record at all — which reads downstream exactly like `title: null`.
+          printf '"a bare string"\n%s\n' '{"entry_key":"A","ok":true,"ref":"10.0000/oneline","status":"valid"}' > odd.jsonl
+          python3 resolve_titles.py --timeout 5 < odd.jsonl > odd.out
+          grep -q 'A single line title' odd.out
+          # And with no doiget at all: a reason per entry, not a crash and not silence.
+          env PATH=/usr/bin:/bin python3 resolve_titles.py --timeout 5 \
+            < test/stub/verify.jsonl > nobin.jsonl
+          test "$(grep -c 'doiget not on PATH' nobin.jsonl)" = "6"

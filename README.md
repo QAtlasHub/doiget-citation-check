@@ -6,6 +6,60 @@ or the check fails. A fabricated or mistyped reference can never pass silently �
 it either fails, or is explicitly vouched for in an allow-list. The result is
 posted as a **sticky PR comment** and the job summary.
 
+## The title cross-check
+
+A DOI that **resolves** is not a DOI that resolves to **the right paper**. A one-character
+slip usually lands on somebody else's real paper, so every check built on resolution alone
+passes it. Measured on one consumer's bibliography, 2 of 18 sampled DOIs have a resolving
+neighbour one digit away — about one slip in nine.
+
+So the action also resolves each entry's registered title (via `doiget cite`, so it goes
+through doiget's own resolver and cache) and compares it with the one the entry declares.
+`mistitled` is gated alongside `broken` and `unverified`.
+
+### What counts as agreement
+
+Neither side being a prefix of the other is a wrong id. Both directions of prefix occur and
+are **not** wrong, but for different reasons, so they get different rules:
+
+- **The bibliography abbreviates** by dropping a subtitle — `…Irreversible Processes` for
+  Kubo 1957's `…Irreversible Processes. I. General Theory and…`. Its title must therefore end
+  where a subtitle begins. Without that boundary, `Quantum Phase Transitions` would match an
+  unrelated paper that merely opens with those words — a real pair found in a real
+  bibliography.
+- **A resolved title shorter than the entry's** is reported as `title_shorter` and **never
+  gated**. It is usually a publisher truncating its own metadata (`…Heisenberg chain with 1/`),
+  but an id that slipped to a paper with a shorter title looks exactly the same — measured on a
+  real bibliography the two overlap completely in length ratio (0.39–0.92 against 0.37–0.69),
+  so this is put in front of a human rather than decided.
+
+Whitespace is **dropped, not normalised**: resolvers strip inline MathML without putting a
+space back, so `the<math>XY</math>Model` arrives as `theXYModel`.
+
+One case is irreducible: a book and a paper differing only by a subtitle
+(`The One-Dimensional Hubbard Model` / `…: a reminiscence`) agree under any rule that tolerates
+a dropped subtitle at all.
+
+### The first run on an existing bibliography
+
+Expect a small number of pre-existing metadata defects, not zero. On a real 246-entry
+bibliography this check gated 2 — `resonnance` for `resonance` in a publisher's registered
+title, and a stray parenthesis a MathML flattening left in another — and reported 2 more as
+`title_shorter`. Both gated entries were genuine defects, not wrong DOIs. Put them in the
+`title-allow` file with the reason; it is a one-time cost, not a recurring one.
+
+### When it cannot run
+
+A title that could not be resolved is reported as `title_inconclusive` and **not** gated — the
+same treatment `transient` gets on the resolution side. The report always carries the
+denominator (`titles compared: N of M`), so a run where nothing could be resolved does not
+render as a run where everything agreed. `resolve_titles.py` writes the reason per entry to
+stderr.
+
+Set `titles: 'false'` to turn the check off. Genuine metadata defects — a typo in the
+registered title itself — go in the `title-allow` file, kept **separate** from `allow` so that
+exempting an entry from the title check does not also exempt it from the resolution gate.
+
 ## Usage
 
 ```yaml
@@ -36,13 +90,18 @@ jobs:
 |---|---|---|
 | `bib` | `docs/references.bib` | BibTeX file to verify |
 | `allow` | `docs/references.allow` | allow-list of acknowledged-broken refs (one DOI/arXiv id or bibkey per line; `#` = comment/reason) |
+| `titles` | `true` | also check that each id resolves to the title the entry names |
+| `title-allow` | `docs/references.title-allow` | allow-list for the title check only — kept separate from `allow` |
+| `title-timeout` | `60` | seconds to wait for each `doiget cite` |
 | `doiget-version` | `v0.8.6` | doiget release tag whose prebuilt binary is used |
 | `comment` | `true` | post the sticky PR comment |
 | `token` | `${{ github.token }}` | token for the PR comment |
 
 ## Outputs
 
-`broken`, `unverified`, `fail`, `ok` — the per-class counts (see gating below).
+`broken`, `unverified`, `mistitled`, `fail`, `ok` — the per-class counts (see gating below),
+plus `titles_compared` and `title_inconclusive`, the denominator for `mistitled` and the
+entries it could not be computed for, and `title_shorter`, which is reported and never gated.
 
 ## How it works
 
@@ -50,6 +109,9 @@ jobs:
    (linux/macOS × x86_64/aarch64) — no Rust build.
 2. `doiget verify <bib> --format auto --mode json` resolves every entry
    (resolver cache in `~/.cache/doiget`, keyed on the bib).
+3. With `titles: true`, `resolve_titles.py` runs `doiget cite` on each entry that
+   resolved and emits `{ref, title}` for the gate to compare — see
+   [The title cross-check](#the-title-cross-check).
 3. The bundled `verify_references_gate.py` classifies each entry and is the sole
    authority on pass/fail:
 

@@ -1,5 +1,5 @@
 name: 'doiget Citation Check'
-description: 'Verify every DOI / arXiv id in a BibTeX file resolves to real metadata (Crossref / arXiv) via doiget, gate on broken or unverified references, and post a sticky PR comment.'
+description: 'Verify every DOI / arXiv id in a BibTeX file resolves to real metadata (Crossref / arXiv) via doiget AND that it resolves to the paper the entry names, gate on broken, unverified or mistitled references, and post a sticky PR comment.'
 author: 'QAtlasHub'
 branding:
   icon: 'check-circle'
@@ -14,6 +14,24 @@ inputs:
     description: 'Path to the allow-list of acknowledged-broken references (one DOI/arXiv id or bibkey per line; # starts a comment with the reason).'
     required: false
     default: 'docs/references.allow'
+  titles:
+    description: >
+      Also cross-check each entry's TITLE against the one its id resolves to. Resolution alone
+      cannot see a one-character slip that lands on somebody else's real paper; the title can.
+      Costs one `doiget cite` per resolved entry (~0.15-0.3 s each, cached across runs).
+    required: false
+    default: 'true'
+  title-allow:
+    description: >
+      Allowlist for the title cross-check — bibkeys or ids whose registered metadata is itself
+      wrong (a truncated title, a dropped subtitle). Kept SEPARATE from `allow` so that
+      exempting an entry here does not also exempt it from the resolution gate.
+    required: false
+    default: 'docs/references.title-allow'
+  title-timeout:
+    description: 'Seconds to wait for each `doiget cite` before giving up on that entry.'
+    required: false
+    default: '60'
   doiget-version:
     description: 'doiget release tag whose prebuilt binary is downloaded.'
     required: false
@@ -37,6 +55,18 @@ outputs:
   fail:
     description: 'Total gated failures (broken + unverified).'
     value: ${{ steps.gate.outputs.fail }}
+  mistitled:
+    description: 'References that resolve, but not to the title the entry declares.'
+    value: ${{ steps.gate.outputs.mistitled }}
+  titles_compared:
+    description: 'How many titles were actually compared — the denominator for `mistitled`.'
+    value: ${{ steps.gate.outputs.titles_compared }}
+  title_inconclusive:
+    description: 'Entries whose title could not be resolved, so nothing was compared.'
+    value: ${{ steps.gate.outputs.title_inconclusive }}
+  title_shorter:
+    description: 'Declared titles that are a prefix of the resolved one — reported, never gated.'
+    value: ${{ steps.gate.outputs.title_shorter }}
   ok:
     description: 'References that resolved cleanly.'
     value: ${{ steps.gate.outputs.ok }}
@@ -79,15 +109,42 @@ runs:
       env:
         BIB: ${{ inputs.bib }}
         ALLOW: ${{ inputs.allow }}
+        TITLES: ${{ inputs.titles }}
+        TITLE_ALLOW: ${{ inputs.title-allow }}
+        TITLE_TIMEOUT: ${{ inputs.title-timeout }}
       run: |
         set -uo pipefail
         # doiget's own exit code is intentionally ignored — the bundled gate
         # script (verify_references_gate.py) is the sole authority on pass/fail.
         doiget verify "$BIB" --format auto --mode json > verify.jsonl || true
+        extra=()
+        if [ "$TITLES" = "true" ]; then
+          # A resolver that died partway emits no record for the entries it never reached, and
+          # a missing record is indistinguishable from `title: null`. Say so.
+          trc=0
+          python3 "${{ github.action_path }}/resolve_titles.py" --timeout "$TITLE_TIMEOUT" \
+            < verify.jsonl > titles.jsonl || trc=$?
+          if [ "$trc" != "0" ]; then
+            echo "::warning::resolve_titles.py exited $trc; entries after that point were never attempted."
+          fi
+          extra=(--titles titles.jsonl --title-allow "$TITLE_ALLOW")
+        fi
+        # The exit code cannot tell a verdict from a crash: an uncaught Python exception also
+        # exits 1. The `fail=` line can — the gate writes the whole block in one call.
+        rc=0
         python3 "${{ github.action_path }}/verify_references_gate.py" \
-          --bib "$BIB" --allow "$ALLOW" \
-          --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || true
+          --bib "$BIB" --allow "$ALLOW" "${extra[@]}" \
+          --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || rc=$?
         cat report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+        if ! grep -q '^fail=' "$GITHUB_OUTPUT"; then
+          echo "::error::verify_references_gate.py exited $rc without producing a verdict."
+          exit 1
+        fi
+        # An outage resolves no titles at all and still leaves `fail` untouched, so the job goes
+        # green. A warning is the only thing that reaches the checks UI on a green run.
+        if [ "$TITLES" = "true" ] && grep -q '^titles_compared=0$' "$GITHUB_OUTPUT"; then
+          echo "::warning::The title cross-check compared nothing — this run was gated on id resolution alone."
+        fi
 
     - name: Sticky PR comment
       if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
@@ -110,9 +167,15 @@ runs:
             await github.rest.issues.createComment({ owner, repo, issue_number, body });
           }
 
-    - name: Gate — fail on broken / unverified references
-      if: ${{ steps.gate.outputs.fail != '0' && steps.gate.outputs.fail != '' }}
+    # A BLANK `fail` means the gate never wrote a verdict, i.e. it crashed. That used to be
+    # exempted here and read as a pass, which is the wrong direction for a gate.
+    - name: Gate — fail on broken / unverified / mistitled references
+      if: ${{ !cancelled() && steps.gate.outcome != 'skipped' && steps.gate.outputs.fail != '0' }}
       shell: bash
       run: |
-        echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record), malformed=${{ steps.gate.outputs.malformed }} (invalid BibTeX key — DocumenterCitations will reject)."
+        if [ -z "${{ steps.gate.outputs.fail }}" ]; then
+          echo "::error::The reference gate produced no verdict — it crashed, or a step before it failed first. Treating that as a failure; see the step logs above."
+          exit 1
+        fi
+        echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record), malformed=${{ steps.gate.outputs.malformed }} (invalid BibTeX key), mistitled=${{ steps.gate.outputs.mistitled }} (resolves to a different paper)."
         exit 1
