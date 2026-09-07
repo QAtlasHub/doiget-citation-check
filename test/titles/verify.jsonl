@@ -13,3 +13,13 @@
 {"entry_key": "Nested", "ok": true, "ref": "10.0000/nested", "status": "valid"}
 {"entry_key": "Concat", "ok": true, "ref": "10.0000/concat", "status": "valid"}
 {"entry_key": "Quoted", "ok": true, "ref": "10.0000/quoted", "status": "valid"}
+{"entry_key": "Symbols", "ok": true, "ref": "10.0000/symbols", "status": "valid"}
+{"entry_key": "Entity", "ok": true, "ref": "10.0000/entity", "status": "valid"}
+{"entry_key": "ColonSub", "ok": true, "ref": "10.0000/colon", "status": "valid"}
+{"entry_key": "SemiSub", "ok": true, "ref": "10.0000/semi", "status": "valid"}
+{"entry_key": "DashSub", "ok": true, "ref": "10.0000/dash", "status": "valid"}
+{"entry_key": "ParenSub", "ok": true, "ref": "10.0000/paren", "status": "valid"}
+{"entry_key": "FirstField", "ok": true, "ref": "10.0000/firstfield", "status": "valid"}
+{"entry_key": "ShortStub", "ok": true, "ref": "10.0000/shortstub", "status": "valid"}
+{"entry_key": "FloorEdge", "ok": true, "ref": "10.0000/flooredge", "status": "valid"}
+{"entry_key": "CommaNest", "ok": true, "ref": "10.0000/commanest", "status": "valid"}

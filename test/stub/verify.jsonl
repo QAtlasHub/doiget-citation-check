@@ -1,6 +1,7 @@
 {"entry_key":"A","ok":true,"ref":"10.0000/oneline","status":"valid"}
 {"entry_key":"B","ok":true,"ref":"10.0000/multiline","status":"valid"}
 {"entry_key":"C","ok":true,"ref":"10.0000/braces","status":"valid"}
+{"entry_key":"D0","ok":true,"ref":"10.0000/booktitle","status":"valid"}
 {"entry_key":"D","ok":true,"ref":"10.0000/notitle","status":"valid"}
 {"entry_key":"E","ok":true,"ref":"10.0000/failing","status":"valid"}
 {"entry_key":"F","ok":false,"ref":"10.0000/broken","status":"absent"}

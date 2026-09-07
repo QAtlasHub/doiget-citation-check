@@ -94,6 +94,8 @@ _ENTITY_RE = re.compile(r"&[a-zA-Z]+;|&#\d+;")
 _LATEX_RE = re.compile(r"\\[a-zA-Z]+")
 # Where a human abbreviates, they drop a subtitle, which begins at one of these.
 _SUBTITLE_RE = re.compile(r"[:.;\u2014\u2013]|\s[-(\[]")
+# Below this, a resolved title too short to be a truncation of anything in particular.
+MIN_SHORTER_CHARS = 12
 
 
 def normalise_title(s):
@@ -123,18 +125,42 @@ def compare_titles(declared, resolved):
     """
     d, r = normalise_title(declared), normalise_title(resolved)
     if not d or not r:
-        return "different"
+        # Nothing left to compare on one side — a title that is all maths, or a garbled
+        # record. Not a wrong paper, and not an agreement either.
+        return "uncomparable"
     if d == r:
         return "same"
     if len(d) < len(r):
         return "same" if r.startswith(d) and d in _subtitle_prefixes(resolved) else "different"
-    return "shorter" if d.startswith(r) else "different"
+    # A floor, because "shorter" is not gated: without one, a wrong id landing on any short
+    # generic record — Erratum, Comment, Reply, Corrigendum — that happens to prefix the real
+    # title produces no signal at all.
+    if d.startswith(r) and len(r) >= MIN_SHORTER_CHARS:
+        return "shorter"
+    return "different"
 
 
-# Anchored on the field separator, so `title = {…}` written inside a `note` value is not
-# mistaken for the entry's own. Brace-matched, not regex-terminated: a title value may itself
-# contain braces, and BibTeX puts no constraint on line breaks.
-_TITLE_START_RE = re.compile(r"[{,]\s*title\s*=\s*", re.IGNORECASE)
+# Found at the entry's own brace depth, so a `title = {…}` written inside a `note` value is
+# not mistaken for it — a comma before it is not enough, and `note` sorts before `title`.
+_TITLE_AT_RE = re.compile(r"title\s*=\s*", re.IGNORECASE)
+
+
+def _title_field_pos(block):
+    """Where the entry's own `title =` value starts, or None."""
+    depth = 0
+    for i, ch in enumerate(block):
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            continue
+        if depth != 1 or ch not in "tT":
+            continue
+        m = _TITLE_AT_RE.match(block, i)
+        if m and (i == 0 or not (block[i - 1].isalnum() or block[i - 1] == "_")):
+            return m.end()
+    return None
 
 
 def _one_value(text, pos):
@@ -191,10 +217,10 @@ def bib_titles(path):
         m = _RAW_ENTRY_RE.match(block)
         if not m or m.group(1).lower() in _NON_REF_TYPES:
             continue
-        t = _TITLE_START_RE.search(block)
-        if not t:
+        pos = _title_field_pos(block)
+        if pos is None:
             continue
-        val = _braced_value(block, t.end())
+        val = _braced_value(block, pos)
         if val is not None:
             out[m.group(2).strip()] = " ".join(val.split())
     return out
@@ -445,7 +471,10 @@ def main():
                 continue
             compared += 1
             verdict = compare_titles(want, got)
-            if verdict == "different":
+            if verdict == "uncomparable":
+                compared -= 1
+                inconclusive.append({"entry_key": key, "ref": ref})
+            elif verdict == "different":
                 mistitled.append({"entry_key": key, "ref": ref, "bib": want, "doi": got})
             elif verdict == "shorter":
                 shorter.append({"entry_key": key, "ref": ref, "bib": want, "doi": got})

@@ -64,6 +64,9 @@ outputs:
   title_inconclusive:
     description: 'Entries whose title could not be resolved, so nothing was compared.'
     value: ${{ steps.gate.outputs.title_inconclusive }}
+  title_shorter:
+    description: 'Declared titles that are a prefix of the resolved one — reported, never gated.'
+    value: ${{ steps.gate.outputs.title_shorter }}
   ok:
     description: 'References that resolved cleanly.'
     value: ${{ steps.gate.outputs.ok }}
@@ -120,16 +123,14 @@ runs:
             < verify.jsonl > titles.jsonl || true
           extra=(--titles titles.jsonl --title-allow "$TITLE_ALLOW")
         fi
-        # The gate's own exit code is a verdict (0 pass / 1 fail), not an accident — anything
-        # else means it crashed before writing one, and a missing verdict must not read as a
-        # pass. `|| true` here would hide that.
+        # The exit code cannot tell a verdict from a crash: an uncaught Python exception also
+        # exits 1. The `fail=` line can — the gate writes the whole block in one call.
         rc=0
         python3 "${{ github.action_path }}/verify_references_gate.py" \
           --bib "$BIB" --allow "$ALLOW" "${extra[@]}" \
           --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || rc=$?
-        if [ "$rc" != "0" ] && [ "$rc" != "1" ]; then
+        if ! grep -q '^fail=' "$GITHUB_OUTPUT"; then
           echo "::error::verify_references_gate.py exited $rc without producing a verdict."
-          echo "crashed=1" >> "$GITHUB_OUTPUT"
         fi
         cat report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
@@ -157,11 +158,11 @@ runs:
     # A BLANK `fail` means the gate never wrote a verdict, i.e. it crashed. That used to be
     # exempted here and read as a pass, which is the wrong direction for a gate.
     - name: Gate — fail on broken / unverified / mistitled references
-      if: ${{ always() && steps.gate.outputs.fail != '0' }}
+      if: ${{ !cancelled() && steps.gate.outcome != 'skipped' && steps.gate.outputs.fail != '0' }}
       shell: bash
       run: |
         if [ -z "${{ steps.gate.outputs.fail }}" ]; then
-          echo "::error::The reference gate produced no verdict — it crashed before writing one. Treating that as a failure; see the step log."
+          echo "::error::The reference gate produced no verdict — it crashed, or a step before it failed first. Treating that as a failure; see the step logs above."
           exit 1
         fi
         echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record), malformed=${{ steps.gate.outputs.malformed }} (invalid BibTeX key), mistitled=${{ steps.gate.outputs.mistitled }} (resolves to a different paper)."
