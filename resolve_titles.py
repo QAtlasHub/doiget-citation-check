@@ -70,6 +70,8 @@ def main():
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(rec, dict):
+            continue
         ref = (rec.get("ref") or "").strip()
         if not ref or rec.get("status") != "valid" or ref.lower() in seen:
             continue

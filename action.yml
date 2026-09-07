@@ -119,8 +119,14 @@ runs:
         doiget verify "$BIB" --format auto --mode json > verify.jsonl || true
         extra=()
         if [ "$TITLES" = "true" ]; then
+          # A resolver that died partway emits no record for the entries it never reached, and
+          # a missing record is indistinguishable from `title: null`. Say so.
+          trc=0
           python3 "${{ github.action_path }}/resolve_titles.py" --timeout "$TITLE_TIMEOUT" \
-            < verify.jsonl > titles.jsonl || true
+            < verify.jsonl > titles.jsonl || trc=$?
+          if [ "$trc" != "0" ]; then
+            echo "::warning::resolve_titles.py exited $trc; entries after that point were never attempted."
+          fi
           extra=(--titles titles.jsonl --title-allow "$TITLE_ALLOW")
         fi
         # The exit code cannot tell a verdict from a crash: an uncaught Python exception also
@@ -129,10 +135,16 @@ runs:
         python3 "${{ github.action_path }}/verify_references_gate.py" \
           --bib "$BIB" --allow "$ALLOW" "${extra[@]}" \
           --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || rc=$?
+        cat report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
         if ! grep -q '^fail=' "$GITHUB_OUTPUT"; then
           echo "::error::verify_references_gate.py exited $rc without producing a verdict."
+          exit 1
         fi
-        cat report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+        # An outage resolves no titles at all and still leaves `fail` untouched, so the job goes
+        # green. A warning is the only thing that reaches the checks UI on a green run.
+        if [ "$TITLES" = "true" ] && grep -q '^titles_compared=0$' "$GITHUB_OUTPUT"; then
+          echo "::warning::The title cross-check compared nothing — this run was gated on id resolution alone."
+        fi
 
     - name: Sticky PR comment
       if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}

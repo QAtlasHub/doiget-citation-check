@@ -147,7 +147,7 @@ _TITLE_AT_RE = re.compile(r"title\s*=\s*", re.IGNORECASE)
 
 def _title_field_pos(block):
     """Where the entry's own `title =` value starts, or None."""
-    depth = 0
+    depth, quoted = 0, False
     for i, ch in enumerate(block):
         if ch == "{":
             depth += 1
@@ -155,7 +155,11 @@ def _title_field_pos(block):
         if ch == "}":
             depth -= 1
             continue
-        if depth != 1 or ch not in "tT":
+        # A quoted value delimits at the entry's own level only; inside braces `"` is literal.
+        if depth == 1 and ch == '"':
+            quoted = not quoted
+            continue
+        if quoted or depth != 1 or ch not in "tT":
             continue
         m = _TITLE_AT_RE.match(block, i)
         if m and (i == 0 or not (block[i - 1].isalnum() or block[i - 1] == "_")):
@@ -181,6 +185,11 @@ def _one_value(text, pos):
             if depth == 0:
                 return text[pos + 1 : i], i + 1
     return None, pos
+
+
+# A brace-matched value that reaches the entry's own closing brace balances, but it has eaten
+# every field in between. Nothing distinguishes that from a title except its shape.
+_ATE_A_FIELD_RE = re.compile(r",\s*\w+\s*=\s*[{\"]")
 
 
 def _braced_value(text, pos):
@@ -221,6 +230,8 @@ def bib_titles(path):
         if pos is None:
             continue
         val = _braced_value(block, pos)
+        if val is not None and _ATE_A_FIELD_RE.search(val):
+            continue  # unterminated: no declared title, so the entry is inconclusive, not wrong
         if val is not None:
             out[m.group(2).strip()] = " ".join(val.split())
     return out
@@ -401,6 +412,9 @@ def print_report(report):
     except UnicodeEncodeError:
         enc = getattr(sys.stdout, "encoding", None) or "ascii"
         print(report.encode(enc, "replace").decode(enc, "replace"))
+    # print() only fills a buffer, so a closed stdout does not surface until the interpreter
+    # flushes at shutdown — long after the caller has written its verdict and exited 0.
+    sys.stdout.flush()
 
 
 def main():
@@ -487,6 +501,9 @@ def main():
         with open(args.report, "w", encoding="utf-8") as fh:
             fh.write(report + "\n")
     fail = len(broken) + len(unverified) + len(malformed) + len(mistitled)
+    # Last, and after the report: a verdict written before the run finishes is a verdict that
+    # survives the run crashing, and `fail=0` outliving a crash reads to the caller as a pass.
+    print_report(report)
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as fh:
             fh.write(
@@ -496,7 +513,6 @@ def main():
                 f"title_shorter={len(shorter)}\n"
                 f"fail={fail}\nok={len(ok)}\ntransient={len(transient)}\n"
             )
-    print_report(report)
 
     return 1 if fail else 0
 

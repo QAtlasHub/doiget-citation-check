@@ -101,7 +101,7 @@ jobs:
 
 `broken`, `unverified`, `mistitled`, `fail`, `ok` — the per-class counts (see gating below),
 plus `titles_compared` and `title_inconclusive`, the denominator for `mistitled` and the
-entries it could not be computed for.
+entries it could not be computed for, and `title_shorter`, which is reported and never gated.
 
 ## How it works
 

@@ -23,3 +23,4 @@
 {"entry_key": "ShortStub", "ok": true, "ref": "10.0000/shortstub", "status": "valid"}
 {"entry_key": "FloorEdge", "ok": true, "ref": "10.0000/flooredge", "status": "valid"}
 {"entry_key": "CommaNest", "ok": true, "ref": "10.0000/commanest", "status": "valid"}
+{"entry_key": "QuotedNest", "ok": true, "ref": "10.0000/quotednest", "status": "valid"}
