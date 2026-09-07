@@ -143,9 +143,10 @@ jobs:
           : > crash.txt
           # A closed stdout: print() only buffers, so this used to surface at interpreter
           # shutdown — after `fail=0` had been written and read as a verdict.
+          # The non-zero exit is the point, and `run:` runs under `bash -e`.
           python3 verify_references_gate.py \
             --bib test/titles/references.bib --allow /dev/null \
-            --report crash.md --github-output crash.txt < test/titles/verify.jsonl | head -c 0
+            --report crash.md --github-output crash.txt < test/titles/verify.jsonl | head -c 0 || true
           if grep -q '^fail=' crash.txt; then
             echo "::error::a verdict outlived the crash that stopped the run"; exit 1
           fi
