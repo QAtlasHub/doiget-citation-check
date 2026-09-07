@@ -27,8 +27,11 @@ are **not** wrong, but for different reasons, so they get different rules:
   where a subtitle begins. Without that boundary, `Quantum Phase Transitions` would match an
   unrelated paper that merely opens with those words — a real pair found in a real
   bibliography.
-- **A publisher truncates its own metadata** at an arbitrary point, mid-word included
-  (`…Heisenberg chain with 1/`). There is no boundary to require.
+- **A resolved title shorter than the entry's** is reported as `title_shorter` and **never
+  gated**. It is usually a publisher truncating its own metadata (`…Heisenberg chain with 1/`),
+  but an id that slipped to a paper with a shorter title looks exactly the same — measured on a
+  real bibliography the two overlap completely in length ratio (0.39–0.92 against 0.37–0.69),
+  so this is put in front of a human rather than decided.
 
 Whitespace is **dropped, not normalised**: resolvers strip inline MathML without putting a
 space back, so `the<math>XY</math>Model` arrives as `theXYModel`.
@@ -36,6 +39,14 @@ space back, so `the<math>XY</math>Model` arrives as `theXYModel`.
 One case is irreducible: a book and a paper differing only by a subtitle
 (`The One-Dimensional Hubbard Model` / `…: a reminiscence`) agree under any rule that tolerates
 a dropped subtitle at all.
+
+### The first run on an existing bibliography
+
+Expect a small number of pre-existing metadata defects, not zero. On a real 246-entry
+bibliography this check gated 2 — `resonnance` for `resonance` in a publisher's registered
+title, and a stray parenthesis a MathML flattening left in another — and reported 2 more as
+`title_shorter`. Both gated entries were genuine defects, not wrong DOIs. Put them in the
+`title-allow` file with the reason; it is a one-time cost, not a recurring one.
 
 ### When it cannot run
 

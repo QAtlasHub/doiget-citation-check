@@ -10,3 +10,6 @@
 {"entry_key": "SharedOpening", "ok": true, "ref": "10.0000/shared", "status": "valid"}
 {"entry_key": "Unresolved", "ok": true, "ref": "10.0000/unresolved", "status": "valid"}
 {"entry_key": "Excused", "ok": true, "ref": "10.0000/excused", "status": "valid"}
+{"entry_key": "Nested", "ok": true, "ref": "10.0000/nested", "status": "valid"}
+{"entry_key": "Concat", "ok": true, "ref": "10.0000/concat", "status": "valid"}
+{"entry_key": "Quoted", "ok": true, "ref": "10.0000/quoted", "status": "valid"}

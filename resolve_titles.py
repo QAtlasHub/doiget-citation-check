@@ -22,7 +22,7 @@ import sys
 # Brace-matched across lines: a title carrying inline maths is rendered over several.
 _TITLE_START = re.compile(r"\btitle\s*=\s*\{", re.IGNORECASE)
 
-from verify_references_gate import BROKEN  # noqa: E402 — one definition, one file
+# Only `valid` entries are ever compared, so anything else is a request spent to learn nothing.
 
 
 def title_of(ref, timeout):
@@ -71,8 +71,7 @@ def main():
         except json.JSONDecodeError:
             continue
         ref = (rec.get("ref") or "").strip()
-        # A broken entry already fails; asking again spends a request to learn nothing.
-        if not ref or rec.get("status") in BROKEN or ref.lower() in seen:
+        if not ref or rec.get("status") != "valid" or ref.lower() in seen:
             continue
         seen.add(ref.lower())
         t, why = title_of(ref, timeout)

@@ -107,42 +107,45 @@ def _subtitle_prefixes(title):
     return {normalise_title(title[: m.start()]) for m in _SUBTITLE_RE.finditer(title)}
 
 
-def titles_agree(declared, resolved):
-    """Whether the two name the same paper.
+def compare_titles(declared, resolved):
+    """`"same"`, `"shorter"` or `"different"`.
 
-    Neither side being a prefix of the other is a wrong id. Both directions of prefix do
-    occur and are not, but for DIFFERENT reasons, so they get different rules:
+    The two directions of prefix are not the same thing:
 
-      * the bibliography abbreviates by dropping a SUBTITLE, so its title must end where one
-        begins — otherwise "Quantum Phase Transitions" would match an unrelated paper that
-        merely opens with those words;
-      * a publisher truncates its own metadata at an arbitrary point, mid-word included, so
-        there is no boundary to require.
+      * the bibliography abbreviating by dropping a SUBTITLE is normal, so its title must end
+        where one begins — without that, "Quantum Phase Transitions" matches an unrelated
+        paper that merely opens with those words;
+      * a resolved title shorter than the declared one is `"shorter"`, not `"same"`. It is
+        usually the publisher truncating its own metadata, but a wrong id whose paper has a
+        shorter title is indistinguishable from that — measured on a real bibliography, the
+        length ratios of the two overlap completely (0.39-0.92 against 0.37-0.69). So it is
+        reported for a human rather than decided here.
     """
     d, r = normalise_title(declared), normalise_title(resolved)
     if not d or not r:
-        return False
+        return "different"
     if d == r:
-        return True
+        return "same"
     if len(d) < len(r):
-        return r.startswith(d) and d in _subtitle_prefixes(resolved)
-    return d.startswith(r)
+        return "same" if r.startswith(d) and d in _subtitle_prefixes(resolved) else "different"
+    return "shorter" if d.startswith(r) else "different"
 
 
-# Brace-matched, not regex-terminated: a title value may itself contain braces, and BibTeX
-# puts no constraint on line breaks.
-_TITLE_START_RE = re.compile(r"\btitle\s*=\s*", re.IGNORECASE)
+# Anchored on the field separator, so `title = {…}` written inside a `note` value is not
+# mistaken for the entry's own. Brace-matched, not regex-terminated: a title value may itself
+# contain braces, and BibTeX puts no constraint on line breaks.
+_TITLE_START_RE = re.compile(r"[{,]\s*title\s*=\s*", re.IGNORECASE)
 
 
-def _braced_value(text, pos):
-    """The `{...}` or `"..."` value starting at `pos`, or None."""
+def _one_value(text, pos):
+    """The `{...}` or `"..."` starting at `pos`, and the index just past it."""
     if pos >= len(text):
-        return None
+        return None, pos
     if text[pos] == '"':
         end = text.find('"', pos + 1)
-        return None if end < 0 else text[pos + 1 : end]
+        return (None, pos) if end < 0 else (text[pos + 1 : end], end + 1)
     if text[pos] != "{":
-        return None
+        return None, pos
     depth = 0
     for i in range(pos, len(text)):
         if text[i] == "{":
@@ -150,8 +153,28 @@ def _braced_value(text, pos):
         elif text[i] == "}":
             depth -= 1
             if depth == 0:
-                return text[pos + 1 : i]
-    return None
+                return text[pos + 1 : i], i + 1
+    return None, pos
+
+
+def _braced_value(text, pos):
+    """The whole value at `pos`, following BibTeX's `#` concatenation."""
+    parts, i = [], pos
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        val, nxt = _one_value(text, i)
+        if val is None:
+            break
+        parts.append(val)
+        i = nxt
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i < len(text) and text[i] == "#":
+            i += 1
+            continue
+        break
+    return "".join(parts) if parts else None
 
 
 def bib_titles(path):
@@ -209,7 +232,7 @@ def detail_of(entry):
 
 def render(
     ok, transient, excepted, broken, unverified, malformed=(), mistitled=(),
-    inconclusive=(), compared=0, titles_on=False,
+    inconclusive=(), compared=0, titles_on=False, shorter=(),
 ):
     out = ["<!-- verify-references-gate -->", "## Reference check — `doiget verify`", ""]
     out.append(f"- ✅ resolved: **{len(ok)}**")
@@ -227,6 +250,10 @@ def render(
     if titles_on:
         # The denominator: without it, a run that compared nothing renders as one that agreed.
         out.append(f"- 🔎 titles compared: **{compared}** of {len(ok)} resolved entries")
+    if shorter:
+        out.append(
+            f"- ⚠️ resolved title is shorter than the entry's (not gated): **{len(shorter)}**"
+        )
     if inconclusive:
         out.append(
             f"- ⚠️ title check inconclusive (no title resolved — not gated): "
@@ -269,6 +296,21 @@ def render(
             "the id, or — if the registered metadata is what is wrong (a truncated title, a "
             "dropped subtitle) — add the bibkey to the `title-allow` file **with a comment "
             "saying why**.",
+            "",
+        ]
+    if shorter:
+        out += [
+            "### ⚠️ The resolved title is shorter than the entry's (not gated)",
+            "",
+            "| bibkey | ref | title in the bibliography | title the id resolves to |",
+            "|---|---|---|---|",
+        ]
+        out += [f"| `{e['entry_key']}` | `{e['ref']}` | {e['bib']} | {e['doi']} |" for e in shorter]
+        out += [
+            "",
+            "Usually the publisher truncating its own metadata. It can also be an id that "
+            "slipped to a paper with a shorter title, and the two are not distinguishable "
+            "from the strings — read these rather than trusting them.",
             "",
         ]
     if inconclusive:
@@ -388,7 +430,7 @@ def main():
 
     resolved = load_titles(args.titles) if args.titles else None
     title_allow = load_allow(args.title_allow) if args.title_allow else set()
-    mistitled, inconclusive, compared = [], [], 0
+    mistitled, inconclusive, shorter, compared = [], [], [], 0
     if resolved is not None:
         declared = bib_titles(args.bib)
         for entry in ok:
@@ -402,12 +444,15 @@ def main():
                 inconclusive.append({"entry_key": key, "ref": ref})
                 continue
             compared += 1
-            if not titles_agree(want, got):
+            verdict = compare_titles(want, got)
+            if verdict == "different":
                 mistitled.append({"entry_key": key, "ref": ref, "bib": want, "doi": got})
+            elif verdict == "shorter":
+                shorter.append({"entry_key": key, "ref": ref, "bib": want, "doi": got})
 
     report = render(
         ok, transient, excepted, broken, unverified, malformed, mistitled,
-        inconclusive, compared, resolved is not None,
+        inconclusive, compared, resolved is not None, shorter,
     )
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
@@ -419,6 +464,7 @@ def main():
                 f"broken={len(broken)}\nunverified={len(unverified)}\n"
                 f"malformed={len(malformed)}\nmistitled={len(mistitled)}\n"
                 f"title_inconclusive={len(inconclusive)}\ntitles_compared={compared}\n"
+                f"title_shorter={len(shorter)}\n"
                 f"fail={fail}\nok={len(ok)}\ntransient={len(transient)}\n"
             )
     print_report(report)
