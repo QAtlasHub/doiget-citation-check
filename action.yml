@@ -1,5 +1,5 @@
 name: 'doiget Citation Check'
-description: 'Verify every DOI / arXiv id in a BibTeX file resolves to real metadata (Crossref / arXiv) via doiget, gate on broken or unverified references, and post a sticky PR comment.'
+description: 'Verify every DOI / arXiv id in a BibTeX file resolves to real metadata (Crossref / arXiv) via doiget AND that it resolves to the paper the entry names, gate on broken, unverified or mistitled references, and post a sticky PR comment.'
 author: 'QAtlasHub'
 branding:
   icon: 'check-circle'
@@ -14,6 +14,24 @@ inputs:
     description: 'Path to the allow-list of acknowledged-broken references (one DOI/arXiv id or bibkey per line; # starts a comment with the reason).'
     required: false
     default: 'docs/references.allow'
+  titles:
+    description: >
+      Also cross-check each entry's TITLE against the one its id resolves to. Resolution alone
+      cannot see a one-character slip that lands on somebody else's real paper; the title can.
+      Costs one `doiget cite` per resolved entry (~0.15-0.3 s each, cached across runs).
+    required: false
+    default: 'true'
+  title-allow:
+    description: >
+      Allowlist for the title cross-check — bibkeys or ids whose registered metadata is itself
+      wrong (a truncated title, a dropped subtitle). Kept SEPARATE from `allow` so that
+      exempting an entry here does not also exempt it from the resolution gate.
+    required: false
+    default: 'docs/references.title-allow'
+  title-timeout:
+    description: 'Seconds to wait for each `doiget cite` before giving up on that entry.'
+    required: false
+    default: '60'
   doiget-version:
     description: 'doiget release tag whose prebuilt binary is downloaded.'
     required: false
@@ -37,6 +55,9 @@ outputs:
   fail:
     description: 'Total gated failures (broken + unverified).'
     value: ${{ steps.gate.outputs.fail }}
+  mistitled:
+    description: 'References that resolve, but not to the title the entry declares.'
+    value: ${{ steps.gate.outputs.mistitled }}
   ok:
     description: 'References that resolved cleanly.'
     value: ${{ steps.gate.outputs.ok }}
@@ -79,13 +100,24 @@ runs:
       env:
         BIB: ${{ inputs.bib }}
         ALLOW: ${{ inputs.allow }}
+        TITLES: ${{ inputs.titles }}
+        TITLE_ALLOW: ${{ inputs.title-allow }}
+        TITLE_TIMEOUT: ${{ inputs.title-timeout }}
       run: |
         set -uo pipefail
         # doiget's own exit code is intentionally ignored — the bundled gate
         # script (verify_references_gate.py) is the sole authority on pass/fail.
         doiget verify "$BIB" --format auto --mode json > verify.jsonl || true
+        titles_arg=""
+        if [ "$TITLES" = "true" ]; then
+          # A resolved id is not the right id. Resolve the titles too, so the gate can see a
+          # slip that landed on somebody else's real paper.
+          python3 "${{ github.action_path }}/resolve_titles.py" "$TITLE_TIMEOUT" \
+            < verify.jsonl > titles.jsonl || true
+          titles_arg="--titles titles.jsonl --title-allow $TITLE_ALLOW"
+        fi
         python3 "${{ github.action_path }}/verify_references_gate.py" \
-          --bib "$BIB" --allow "$ALLOW" \
+          --bib "$BIB" --allow "$ALLOW" $titles_arg \
           --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || true
         cat report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 

@@ -88,6 +88,115 @@ def malformed_keys(path):
     return bad
 
 
+# Crossref/DataCite return APS and Springer titles with the maths as inline MathML or HTML
+# where a bibliography has LaTeX, and the same symbol is a glyph on one side and a command name
+# on the other. Comparing raw strings makes every title containing a symbol read as a mismatch
+# (measured: 25 of 231 on one consumer's bibliography). Strip both notations, then compare words.
+_TAG_RE = re.compile(r"<[^>]*>")
+_ENTITY_RE = re.compile(r"&[a-zA-Z]+;|&#\d+;")
+_LATEX_RE = re.compile(r"\\[a-zA-Z]+")
+
+
+def normalise_title(s):
+    # Whitespace is dropped, not normalised. Resolvers strip inline MathML WITHOUT putting a
+    # space back, so `the<math>XY</math>Model` arrives as `theXYModel` and the word boundary
+    # is unrecoverable; comparing the letters alone sidesteps that. Two different papers
+    # agreeing letter-for-letter is not a case worth designing against.
+    s = _LATEX_RE.sub(" ", _ENTITY_RE.sub(" ", _TAG_RE.sub(" ", s)))
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+# One of the two sides being an abbreviation of the other is the normal case, in both
+# directions: a bibliography routinely drops a subtitle ("…Irreversible Processes" for Kubo
+# 1957's "…Irreversible Processes. I. General Theory and…"), and registered metadata is
+# routinely truncated mid-title by the publisher. Neither is a wrong paper. A wrong id is:
+# it resolves to a title sharing no opening at all. So the test is whether the shorter is a
+# prefix of the longer, with a floor so that a stub cannot match everything.
+MIN_PREFIX_CHARS = 12
+
+
+def titles_agree(a, b):
+    x, y = normalise_title(a), normalise_title(b)
+    if not x or not y:
+        return False
+    short, long_ = (x, y) if len(x) <= len(y) else (y, x)
+    if len(short) < MIN_PREFIX_CHARS and len(short) != len(long_):
+        return False
+    return long_.startswith(short)
+
+
+# A `title` field, wherever it sits: BibTeX puts no constraint on line breaks, and a whole
+# entry on one line is legal. Brace-matched rather than regex-terminated, because titles
+# routinely contain braces of their own (`{\\it XY}`, `SrCu$_2$(BO$_3$)$_2$`).
+_TITLE_START_RE = re.compile(r"\btitle\s*=\s*", re.IGNORECASE)
+
+
+def _braced_value(text, pos):
+    """The `{...}` or `"..."` value starting at `pos`, or None."""
+    if pos >= len(text):
+        return None
+    if text[pos] == '"':
+        end = text.find('"', pos + 1)
+        return None if end < 0 else text[pos + 1 : end]
+    if text[pos] != "{":
+        return None
+    depth = 0
+    for i in range(pos, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[pos + 1 : i]
+    return None
+
+
+def bib_titles(path):
+    """`{bibkey: title}` for every entry that declares one."""
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    out = {}
+    for block in re.split(r"(?=^@)", text, flags=re.MULTILINE):
+        m = _RAW_ENTRY_RE.match(block)
+        if not m or m.group(1).lower() in _NON_REF_TYPES:
+            continue
+        t = _TITLE_START_RE.search(block)
+        if not t:
+            continue
+        val = _braced_value(block, t.end())
+        if val is not None:
+            out[m.group(2).strip()] = " ".join(val.split())
+    return out
+
+
+def load_titles(path):
+    """`{ref: resolved title}` from the JSONL the action writes with `doiget cite`."""
+    if not path:
+        return {}
+    out = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ref = (rec.get("ref") or "").lower()
+                if ref and rec.get("title"):
+                    out[ref] = rec["title"]
+    except OSError:
+        return {}
+    return out
+
+
 def detail_of(entry):
     err = entry.get("error")
     if isinstance(err, dict):
@@ -95,7 +204,7 @@ def detail_of(entry):
     return ""
 
 
-def render(ok, transient, excepted, broken, unverified, malformed=()):
+def render(ok, transient, excepted, broken, unverified, malformed=(), mistitled=()):
     out = ["<!-- verify-references-gate -->", "## Reference check — `doiget verify`", ""]
     out.append(f"- ✅ resolved: **{len(ok)}**")
     if transient:
@@ -107,6 +216,8 @@ def render(ok, transient, excepted, broken, unverified, malformed=()):
         out.append(f"- ❌ unverified (no record — check did not run): **{len(unverified)}**")
     if malformed:
         out.append(f"- ❌ malformed bib keys (invalid — DocumenterCitations will reject): **{len(malformed)}**")
+    if mistitled:
+        out.append(f"- ❌ wrong paper (resolves, but not to this title): **{len(mistitled)}**")
     out.append("")
 
     def table(title, rows):
@@ -127,6 +238,25 @@ def render(ok, transient, excepted, broken, unverified, malformed=()):
         out += ["| bibkey |", "|---|"]
         out += [f"| `{k}` |" for k in unverified]
         out += [""]
+    if mistitled:
+        out += [
+            "### ❌ Resolves to a different paper",
+            "",
+            "| bibkey | ref | title in the bibliography | title the id resolves to |",
+            "|---|---|---|---|",
+        ]
+        out += [
+            f"| `{e['entry_key']}` | `{e['ref']}` | {e['bib']} | {e['doi']} |" for e in mistitled
+        ]
+        out += [
+            "",
+            "These resolve, so the checks above pass them. A one-character slip in a DOI "
+            "usually lands on somebody else's real paper, and only the title sees it. Fix "
+            "the id, or — if the registered metadata is what is wrong (a truncated title, a "
+            "dropped subtitle) — add the bibkey to the `title-allow` file **with a comment "
+            "saying why**.",
+            "",
+        ]
     out += table("⚠️ Transient (not gated)", transient)
     out += table("🟡 Allowlisted exceptions", excepted)
 
@@ -188,6 +318,17 @@ def main():
     ap.add_argument("--allow", default="docs/references.allow", help="allowlist file")
     ap.add_argument("--report", default="", help="write the Markdown report to this path")
     ap.add_argument("--github-output", default="", help="write broken=/unverified=/fail=/ok= here")
+    ap.add_argument(
+        "--titles",
+        default="",
+        help="JSONL of {ref,title} resolved metadata; enables the title cross-check",
+    )
+    ap.add_argument(
+        "--title-allow",
+        default="",
+        help="allowlist for the title cross-check, kept separate from --allow so that "
+        "exempting an entry here does not also exempt it from the resolution gate",
+    )
     args = ap.parse_args()
 
     allow = load_allow(args.allow)
@@ -222,16 +363,35 @@ def main():
     unverified = [k for k in bib_keys(args.bib) if k.lower() not in seen]
     malformed = malformed_keys(args.bib)
 
-    report = render(ok, transient, excepted, broken, unverified, malformed)
+    # A DOI that RESOLVES is not a DOI that resolves to the right paper: a one-character slip
+    # usually lands on somebody else's real paper and passes everything above. Comparing the
+    # title is what sees that.
+    resolved = load_titles(args.titles)
+    title_allow = load_allow(args.title_allow) if args.title_allow else set()
+    mistitled = []
+    if resolved:
+        declared = bib_titles(args.bib)
+        for entry in ok:
+            key = entry.get("entry_key") or ""
+            ref = (entry.get("ref") or "").lower()
+            if key.lower() in title_allow or ref in title_allow:
+                continue
+            want, got = declared.get(key), resolved.get(ref)
+            if not want or not got:
+                continue
+            if not titles_agree(want, got):
+                mistitled.append({"entry_key": key, "ref": ref, "bib": want, "doi": got})
+
+    report = render(ok, transient, excepted, broken, unverified, malformed, mistitled)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
             fh.write(report + "\n")
-    fail = len(broken) + len(unverified) + len(malformed)
+    fail = len(broken) + len(unverified) + len(malformed) + len(mistitled)
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as fh:
             fh.write(
                 f"broken={len(broken)}\nunverified={len(unverified)}\n"
-                f"malformed={len(malformed)}\n"
+                f"malformed={len(malformed)}\nmistitled={len(mistitled)}\n"
                 f"fail={fail}\nok={len(ok)}\ntransient={len(transient)}\n"
             )
     print_report(report)

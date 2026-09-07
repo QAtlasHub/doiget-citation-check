@@ -54,3 +54,36 @@ jobs:
           set -e
           test "$code" = "1" || { echo "::error::expected exit 1, got $code"; exit 1; }
           echo "exit 1 as expected — the gate still gates"
+
+  titles:
+    name: The title cross-check separates an abbreviation from a wrong paper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: A resolving id that is the WRONG paper fails; abbreviations do not
+        run: |
+          set -uo pipefail
+          python3 verify_references_gate.py \
+            --bib test/titles/references.bib --allow /dev/null \
+            --titles test/titles/titles.jsonl --title-allow test/titles/title.allow \
+            --github-output out.txt < test/titles/verify.jsonl > report.md
+          rc=$?
+          cat report.md
+          # Six entries: one wrong paper, one allowlisted stub, and four that must pass —
+          # an exact match, a bib that drops a subtitle, a title whose maths lost its word
+          # boundaries in the resolver, and metadata truncated by the publisher.
+          test "$rc" = "1"
+          grep -q 'mistitled=1' out.txt
+          grep -q 'WrongPaper' report.md
+          for k in Right Abbrev Mathy Truncated; do
+            grep -q "| \`$k\`" report.md && { echo "::error::$k was gated but must pass"; exit 1; }
+          done
+          echo "OK"
+      - name: Turning the check off leaves the resolution gate alone
+        run: |
+          set -uo pipefail
+          python3 verify_references_gate.py \
+            --bib test/titles/references.bib --allow /dev/null \
+            --github-output off.txt < test/titles/verify.jsonl > /dev/null
+          test "$?" = "0"
+          grep -q 'mistitled=0' off.txt
