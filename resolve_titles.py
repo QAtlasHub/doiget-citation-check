@@ -7,39 +7,60 @@ every check built on resolution alone passes it. `verify_references_gate.py --ti
 titles to see that; this is what hands it the resolved side.
 
 Reads `doiget verify`'s JSON-Lines on stdin and shells out to `doiget cite`, so resolution goes
-through doiget's own resolver and cache rather than a second HTTP client. A reference whose
-title cannot be obtained is simply omitted — the gate skips what it has no counterpart for,
-because "could not resolve the title" is the transient case, not a wrong citation.
+through doiget's own resolver and cache rather than a second HTTP client.
+
+Emits a record for every entry, including the ones whose title could not be obtained
+(`title: null` plus a `reason`). A silent omission would make "the check could not run" read
+exactly like "the check ran and agreed" — which for a gate is worse than not having it.
 """
+import argparse
 import json
 import re
 import subprocess
 import sys
 
-# `title = {...}` in the BibTeX `doiget cite` prints. Non-greedy to the first closing brace at
-# depth zero is enough: doiget emits one field per line.
-_TITLE_RE = re.compile(r"^\s*title\s*=\s*\{(.*)\}\s*,?\s*$", re.MULTILINE)
+# Brace-matched across lines: a title carrying inline maths is rendered over several.
+_TITLE_START = re.compile(r"\btitle\s*=\s*\{", re.IGNORECASE)
 
-BROKEN = {"illegal", "absent"}
+from verify_references_gate import BROKEN  # noqa: E402 — one definition, one file
 
 
 def title_of(ref, timeout):
+    """`(title, None)`, or `(None, reason)` — never a bare None, so a failure can be reported."""
     try:
-        out = subprocess.run(
+        proc = subprocess.run(
             ["doiget", "cite", ref],
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    m = _TITLE_RE.search(out)
-    return " ".join(m.group(1).split()) if m else None
+        )
+    except FileNotFoundError:
+        return None, "doiget not on PATH"
+    except OSError as e:
+        return None, f"doiget failed to run: {e}"
+    except subprocess.TimeoutExpired:
+        return None, f"doiget cite timed out after {timeout}s"
+    if proc.returncode != 0:
+        return None, f"doiget cite exited {proc.returncode}"
+    m = _TITLE_START.search(proc.stdout)
+    if not m:
+        return None, "no title field in the citation"
+    depth, start = 1, m.end()
+    for i in range(start, len(proc.stdout)):
+        if proc.stdout[i] == "{":
+            depth += 1
+        elif proc.stdout[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return " ".join(proc.stdout[start:i].split()), None
+    return None, "unterminated title field"
 
 
 def main():
-    timeout = float(sys.argv[1]) if len(sys.argv) > 1 else 60.0
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--timeout", type=float, default=60.0, help="seconds per `doiget cite`")
+    timeout = ap.parse_args().timeout
     seen = set()
     for line in sys.stdin:
         line = line.strip()
@@ -50,14 +71,16 @@ def main():
         except json.JSONDecodeError:
             continue
         ref = (rec.get("ref") or "").strip()
-        # Only entries that resolved: a broken one already fails, and asking again wastes a
-        # request per entry on the very refs that cannot answer.
+        # A broken entry already fails; asking again spends a request to learn nothing.
         if not ref or rec.get("status") in BROKEN or ref.lower() in seen:
             continue
         seen.add(ref.lower())
-        t = title_of(ref, timeout)
-        if t:
-            print(json.dumps({"ref": ref, "title": t}, ensure_ascii=False), flush=True)
+        t, why = title_of(ref, timeout)
+        # A record either way, so the gate can tell "could not check" from "agreed".
+        rec = {"ref": ref, "title": t} if t else {"ref": ref, "title": None, "reason": why}
+        if not t:
+            print(f"resolve_titles: {ref}: {why}", file=sys.stderr)
+        print(json.dumps(rec, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

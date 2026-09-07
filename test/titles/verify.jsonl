@@ -1,6 +1,12 @@
-{"entry_key":"Right","ok":true,"ref":"10.0000/right","status":"valid"}
-{"entry_key":"Abbrev","ok":true,"ref":"10.0000/abbrev","status":"valid"}
-{"entry_key":"Mathy","ok":true,"ref":"10.0000/mathy","status":"valid"}
-{"entry_key":"Truncated","ok":true,"ref":"10.0000/truncated","status":"valid"}
-{"entry_key":"WrongPaper","ok":true,"ref":"10.0000/wrong","status":"valid"}
-{"entry_key":"Stub","ok":true,"ref":"10.0000/stub","status":"valid"}
+{"entry_key": "Right", "ok": true, "ref": "10.0000/right", "status": "valid"}
+{"entry_key": "Abbrev", "ok": true, "ref": "10.0000/abbrev", "status": "valid"}
+{"entry_key": "Mathml", "ok": true, "ref": "10.0000/mathml", "status": "valid"}
+{"entry_key": "RunTogether", "ok": true, "ref": "10.0000/runtogether", "status": "valid"}
+{"entry_key": "Latex", "ok": true, "ref": "10.0000/latex", "status": "valid"}
+{"entry_key": "Truncated", "ok": true, "ref": "10.0000/truncated", "status": "valid"}
+{"entry_key": "TruncatedMidWord", "ok": true, "ref": "10.0000/midword", "status": "valid"}
+{"entry_key": "Braced", "ok": true, "ref": "10.0000/braced", "status": "valid"}
+{"entry_key": "WrongPaper", "ok": true, "ref": "10.0000/wrong", "status": "valid"}
+{"entry_key": "SharedOpening", "ok": true, "ref": "10.0000/shared", "status": "valid"}
+{"entry_key": "Unresolved", "ok": true, "ref": "10.0000/unresolved", "status": "valid"}
+{"entry_key": "Excused", "ok": true, "ref": "10.0000/excused", "status": "valid"}

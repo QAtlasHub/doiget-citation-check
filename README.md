@@ -17,21 +17,36 @@ So the action also resolves each entry's registered title (via `doiget cite`, so
 through doiget's own resolver and cache) and compares it with the one the entry declares.
 `mistitled` is gated alongside `broken` and `unverified`.
 
-What it does **not** flag, because neither is a wrong paper:
+### What counts as agreement
 
-- a bibliography that drops a subtitle (`…Irreversible Processes` for Kubo 1957's
-  `…Irreversible Processes. I. General Theory and…`);
-- registered metadata truncated by the publisher (`Yang-Lee Edge Singularity and`);
-- maths rendered differently on the two sides — LaTeX in the bibliography, inline MathML or
-  a run-together `theXYModel` from the resolver.
+Neither side being a prefix of the other is a wrong id. Both directions of prefix occur and
+are **not** wrong, but for different reasons, so they get different rules:
 
-The rule is that the shorter title must be a prefix of the longer one, letters only, with a
-floor so a stub cannot match everything. Whitespace is dropped rather than normalised because
-resolvers strip inline MathML without putting a space back, and that word boundary is
-unrecoverable.
+- **The bibliography abbreviates** by dropping a subtitle — `…Irreversible Processes` for
+  Kubo 1957's `…Irreversible Processes. I. General Theory and…`. Its title must therefore end
+  where a subtitle begins. Without that boundary, `Quantum Phase Transitions` would match an
+  unrelated paper that merely opens with those words — a real pair found in a real
+  bibliography.
+- **A publisher truncates its own metadata** at an arbitrary point, mid-word included
+  (`…Heisenberg chain with 1/`). There is no boundary to require.
 
-Set `titles: 'false'` to turn it off. Genuine metadata defects — a typo in the registered
-title itself — go in the `title-allow` file, which is kept **separate** from `allow` so that
+Whitespace is **dropped, not normalised**: resolvers strip inline MathML without putting a
+space back, so `the<math>XY</math>Model` arrives as `theXYModel`.
+
+One case is irreducible: a book and a paper differing only by a subtitle
+(`The One-Dimensional Hubbard Model` / `…: a reminiscence`) agree under any rule that tolerates
+a dropped subtitle at all.
+
+### When it cannot run
+
+A title that could not be resolved is reported as `title_inconclusive` and **not** gated — the
+same treatment `transient` gets on the resolution side. The report always carries the
+denominator (`titles compared: N of M`), so a run where nothing could be resolved does not
+render as a run where everything agreed. `resolve_titles.py` writes the reason per entry to
+stderr.
+
+Set `titles: 'false'` to turn the check off. Genuine metadata defects — a typo in the
+registered title itself — go in the `title-allow` file, kept **separate** from `allow` so that
 exempting an entry from the title check does not also exempt it from the resolution gate.
 
 ## Usage
@@ -73,7 +88,9 @@ jobs:
 
 ## Outputs
 
-`broken`, `unverified`, `mistitled`, `fail`, `ok` — the per-class counts (see gating below).
+`broken`, `unverified`, `mistitled`, `fail`, `ok` — the per-class counts (see gating below),
+plus `titles_compared` and `title_inconclusive`, the denominator for `mistitled` and the
+entries it could not be computed for.
 
 ## How it works
 

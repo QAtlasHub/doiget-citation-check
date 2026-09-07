@@ -88,46 +88,49 @@ def malformed_keys(path):
     return bad
 
 
-# Crossref/DataCite return APS and Springer titles with the maths as inline MathML or HTML
-# where a bibliography has LaTeX, and the same symbol is a glyph on one side and a command name
-# on the other. Comparing raw strings makes every title containing a symbol read as a mismatch
-# (measured: 25 of 231 on one consumer's bibliography). Strip both notations, then compare words.
+# Titles arrive as inline MathML or HTML on one side and LaTeX on the other; strip both.
 _TAG_RE = re.compile(r"<[^>]*>")
 _ENTITY_RE = re.compile(r"&[a-zA-Z]+;|&#\d+;")
 _LATEX_RE = re.compile(r"\\[a-zA-Z]+")
+# Where a human abbreviates, they drop a subtitle, which begins at one of these.
+_SUBTITLE_RE = re.compile(r"[:.;\u2014\u2013]|\s[-(\[]")
 
 
 def normalise_title(s):
-    # Whitespace is dropped, not normalised. Resolvers strip inline MathML WITHOUT putting a
-    # space back, so `the<math>XY</math>Model` arrives as `theXYModel` and the word boundary
-    # is unrecoverable; comparing the letters alone sidesteps that. Two different papers
-    # agreeing letter-for-letter is not a case worth designing against.
+    # Whitespace is dropped, not normalised: resolvers can run words together.
     s = _LATEX_RE.sub(" ", _ENTITY_RE.sub(" ", _TAG_RE.sub(" ", s)))
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-# One of the two sides being an abbreviation of the other is the normal case, in both
-# directions: a bibliography routinely drops a subtitle ("…Irreversible Processes" for Kubo
-# 1957's "…Irreversible Processes. I. General Theory and…"), and registered metadata is
-# routinely truncated mid-title by the publisher. Neither is a wrong paper. A wrong id is:
-# it resolves to a title sharing no opening at all. So the test is whether the shorter is a
-# prefix of the longer, with a floor so that a stub cannot match everything.
-MIN_PREFIX_CHARS = 12
+def _subtitle_prefixes(title):
+    """Every prefix of `title` that ends where a subtitle begins, normalised."""
+    return {normalise_title(title[: m.start()]) for m in _SUBTITLE_RE.finditer(title)}
 
 
-def titles_agree(a, b):
-    x, y = normalise_title(a), normalise_title(b)
-    if not x or not y:
+def titles_agree(declared, resolved):
+    """Whether the two name the same paper.
+
+    Neither side being a prefix of the other is a wrong id. Both directions of prefix do
+    occur and are not, but for DIFFERENT reasons, so they get different rules:
+
+      * the bibliography abbreviates by dropping a SUBTITLE, so its title must end where one
+        begins — otherwise "Quantum Phase Transitions" would match an unrelated paper that
+        merely opens with those words;
+      * a publisher truncates its own metadata at an arbitrary point, mid-word included, so
+        there is no boundary to require.
+    """
+    d, r = normalise_title(declared), normalise_title(resolved)
+    if not d or not r:
         return False
-    short, long_ = (x, y) if len(x) <= len(y) else (y, x)
-    if len(short) < MIN_PREFIX_CHARS and len(short) != len(long_):
-        return False
-    return long_.startswith(short)
+    if d == r:
+        return True
+    if len(d) < len(r):
+        return r.startswith(d) and d in _subtitle_prefixes(resolved)
+    return d.startswith(r)
 
 
-# A `title` field, wherever it sits: BibTeX puts no constraint on line breaks, and a whole
-# entry on one line is legal. Brace-matched rather than regex-terminated, because titles
-# routinely contain braces of their own (`{\\it XY}`, `SrCu$_2$(BO$_3$)$_2$`).
+# Brace-matched, not regex-terminated: a title value may itself contain braces, and BibTeX
+# puts no constraint on line breaks.
 _TITLE_START_RE = re.compile(r"\btitle\s*=\s*", re.IGNORECASE)
 
 
@@ -175,7 +178,7 @@ def bib_titles(path):
 
 
 def load_titles(path):
-    """`{ref: resolved title}` from the JSONL the action writes with `doiget cite`."""
+    """`{ref: title or None}` from the JSONL the action writes with `doiget cite`."""
     if not path:
         return {}
     out = {}
@@ -190,8 +193,8 @@ def load_titles(path):
                 except json.JSONDecodeError:
                     continue
                 ref = (rec.get("ref") or "").lower()
-                if ref and rec.get("title"):
-                    out[ref] = rec["title"]
+                if ref:
+                    out[ref] = rec.get("title") or None
     except OSError:
         return {}
     return out
@@ -204,7 +207,10 @@ def detail_of(entry):
     return ""
 
 
-def render(ok, transient, excepted, broken, unverified, malformed=(), mistitled=()):
+def render(
+    ok, transient, excepted, broken, unverified, malformed=(), mistitled=(),
+    inconclusive=(), compared=0, titles_on=False,
+):
     out = ["<!-- verify-references-gate -->", "## Reference check — `doiget verify`", ""]
     out.append(f"- ✅ resolved: **{len(ok)}**")
     if transient:
@@ -218,6 +224,14 @@ def render(ok, transient, excepted, broken, unverified, malformed=(), mistitled=
         out.append(f"- ❌ malformed bib keys (invalid — DocumenterCitations will reject): **{len(malformed)}**")
     if mistitled:
         out.append(f"- ❌ wrong paper (resolves, but not to this title): **{len(mistitled)}**")
+    if titles_on:
+        # The denominator: without it, a run that compared nothing renders as one that agreed.
+        out.append(f"- 🔎 titles compared: **{compared}** of {len(ok)} resolved entries")
+    if inconclusive:
+        out.append(
+            f"- ⚠️ title check inconclusive (no title resolved — not gated): "
+            f"**{len(inconclusive)}**"
+        )
     out.append("")
 
     def table(title, rows):
@@ -255,6 +269,15 @@ def render(ok, transient, excepted, broken, unverified, malformed=(), mistitled=
             "the id, or — if the registered metadata is what is wrong (a truncated title, a "
             "dropped subtitle) — add the bibkey to the `title-allow` file **with a comment "
             "saying why**.",
+            "",
+        ]
+    if inconclusive:
+        out += ["### ⚠️ Title check inconclusive (not gated)", "", "| bibkey | ref |", "|---|---|"]
+        out += [f"| `{e['entry_key']}` | `{e['ref']}` |" for e in inconclusive]
+        out += [
+            "",
+            "No title came back for these, so nothing was compared. The reason is on stderr, "
+            "per entry. A whole run landing here means the title check did not run at all.",
             "",
         ]
     out += table("⚠️ Transient (not gated)", transient)
@@ -363,13 +386,10 @@ def main():
     unverified = [k for k in bib_keys(args.bib) if k.lower() not in seen]
     malformed = malformed_keys(args.bib)
 
-    # A DOI that RESOLVES is not a DOI that resolves to the right paper: a one-character slip
-    # usually lands on somebody else's real paper and passes everything above. Comparing the
-    # title is what sees that.
-    resolved = load_titles(args.titles)
+    resolved = load_titles(args.titles) if args.titles else None
     title_allow = load_allow(args.title_allow) if args.title_allow else set()
-    mistitled = []
-    if resolved:
+    mistitled, inconclusive, compared = [], [], 0
+    if resolved is not None:
         declared = bib_titles(args.bib)
         for entry in ok:
             key = entry.get("entry_key") or ""
@@ -378,11 +398,17 @@ def main():
                 continue
             want, got = declared.get(key), resolved.get(ref)
             if not want or not got:
+                # Reported, not gated.
+                inconclusive.append({"entry_key": key, "ref": ref})
                 continue
+            compared += 1
             if not titles_agree(want, got):
                 mistitled.append({"entry_key": key, "ref": ref, "bib": want, "doi": got})
 
-    report = render(ok, transient, excepted, broken, unverified, malformed, mistitled)
+    report = render(
+        ok, transient, excepted, broken, unverified, malformed, mistitled,
+        inconclusive, compared, resolved is not None,
+    )
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
             fh.write(report + "\n")
@@ -392,6 +418,7 @@ def main():
             fh.write(
                 f"broken={len(broken)}\nunverified={len(unverified)}\n"
                 f"malformed={len(malformed)}\nmistitled={len(mistitled)}\n"
+                f"title_inconclusive={len(inconclusive)}\ntitles_compared={compared}\n"
                 f"fail={fail}\nok={len(ok)}\ntransient={len(transient)}\n"
             )
     print_report(report)

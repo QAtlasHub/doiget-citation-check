@@ -58,6 +58,12 @@ outputs:
   mistitled:
     description: 'References that resolve, but not to the title the entry declares.'
     value: ${{ steps.gate.outputs.mistitled }}
+  titles_compared:
+    description: 'How many titles were actually compared — the denominator for `mistitled`.'
+    value: ${{ steps.gate.outputs.titles_compared }}
+  title_inconclusive:
+    description: 'Entries whose title could not be resolved, so nothing was compared.'
+    value: ${{ steps.gate.outputs.title_inconclusive }}
   ok:
     description: 'References that resolved cleanly.'
     value: ${{ steps.gate.outputs.ok }}
@@ -108,17 +114,23 @@ runs:
         # doiget's own exit code is intentionally ignored — the bundled gate
         # script (verify_references_gate.py) is the sole authority on pass/fail.
         doiget verify "$BIB" --format auto --mode json > verify.jsonl || true
-        titles_arg=""
+        extra=()
         if [ "$TITLES" = "true" ]; then
-          # A resolved id is not the right id. Resolve the titles too, so the gate can see a
-          # slip that landed on somebody else's real paper.
-          python3 "${{ github.action_path }}/resolve_titles.py" "$TITLE_TIMEOUT" \
+          python3 "${{ github.action_path }}/resolve_titles.py" --timeout "$TITLE_TIMEOUT" \
             < verify.jsonl > titles.jsonl || true
-          titles_arg="--titles titles.jsonl --title-allow $TITLE_ALLOW"
+          extra=(--titles titles.jsonl --title-allow "$TITLE_ALLOW")
         fi
+        # The gate's own exit code is a verdict (0 pass / 1 fail), not an accident — anything
+        # else means it crashed before writing one, and a missing verdict must not read as a
+        # pass. `|| true` here would hide that.
+        rc=0
         python3 "${{ github.action_path }}/verify_references_gate.py" \
-          --bib "$BIB" --allow "$ALLOW" $titles_arg \
-          --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || true
+          --bib "$BIB" --allow "$ALLOW" "${extra[@]}" \
+          --report report.md --github-output "$GITHUB_OUTPUT" < verify.jsonl || rc=$?
+        if [ "$rc" != "0" ] && [ "$rc" != "1" ]; then
+          echo "::error::verify_references_gate.py exited $rc without producing a verdict."
+          echo "crashed=1" >> "$GITHUB_OUTPUT"
+        fi
         cat report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
     - name: Sticky PR comment
@@ -142,9 +154,15 @@ runs:
             await github.rest.issues.createComment({ owner, repo, issue_number, body });
           }
 
-    - name: Gate — fail on broken / unverified references
-      if: ${{ steps.gate.outputs.fail != '0' && steps.gate.outputs.fail != '' }}
+    # A BLANK `fail` means the gate never wrote a verdict, i.e. it crashed. That used to be
+    # exempted here and read as a pass, which is the wrong direction for a gate.
+    - name: Gate — fail on broken / unverified / mistitled references
+      if: ${{ always() && steps.gate.outputs.fail != '0' }}
       shell: bash
       run: |
-        echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record), malformed=${{ steps.gate.outputs.malformed }} (invalid BibTeX key — DocumenterCitations will reject)."
+        if [ -z "${{ steps.gate.outputs.fail }}" ]; then
+          echo "::error::The reference gate produced no verdict — it crashed before writing one. Treating that as a failure; see the step log."
+          exit 1
+        fi
+        echo "::error::${{ steps.gate.outputs.fail }} reference(s) failed — broken=${{ steps.gate.outputs.broken }} (unresolved/malformed, not in the allow-list), unverified=${{ steps.gate.outputs.unverified }} (produced no verify record), malformed=${{ steps.gate.outputs.malformed }} (invalid BibTeX key), mistitled=${{ steps.gate.outputs.mistitled }} (resolves to a different paper)."
         exit 1

@@ -56,39 +56,70 @@ jobs:
           echo "exit 1 as expected — the gate still gates"
 
   titles:
-    name: The title cross-check separates an abbreviation from a wrong paper
+    name: The title cross-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: A resolving id that is the WRONG paper fails; abbreviations do not
+
+      - name: Exactly the two wrong papers are gated, and nothing else
         run: |
-          # The runner starts this with `bash -e`, and a non-zero exit is the POINT of this
-          # step, so it has to be captured rather than allowed to kill the step.
-          set -uo pipefail
+          set -euo pipefail
           rc=0
           python3 verify_references_gate.py \
             --bib test/titles/references.bib --allow /dev/null \
             --titles test/titles/titles.jsonl --title-allow test/titles/title.allow \
             --github-output out.txt < test/titles/verify.jsonl > report.md || rc=$?
           cat report.md
-          # Six entries: one wrong paper, one allowlisted stub, and four that must pass —
-          # an exact match, a bib that drops a subtitle, a title whose maths lost its word
-          # boundaries in the resolver, and metadata truncated by the publisher.
           test "$rc" = "1"
-          grep -q 'mistitled=1' out.txt
-          grep -q 'WrongPaper' report.md
-          for k in Right Abbrev Mathy Truncated; do
-            if grep -q "| \`$k\`" report.md; then
-              echo "::error::$k was gated but must pass"; exit 1
-            fi
-          done
-          echo "OK"
-      - name: Turning the check off leaves the resolution gate alone
+          # The SET, not the count: a rule that flags the right number of the wrong entries
+          # passes a count check. WrongPaper resolves to an unrelated title; SharedOpening
+          # opens with the bibliography's whole title but continues into it, which is what
+          # separates an abbreviation from a different paper.
+          got=$(python3 - <<'EOF'
+          import re
+          keys, on = [], False
+          for line in open("report.md"):
+              if line.startswith("### ❌ Resolves to a different"): on = True; continue
+              if on and line.startswith("###"): break
+              m = re.match(r"\|\s*`([A-Za-z]+)`", line)
+              if on and m: keys.append(m.group(1))
+          print(",".join(sorted(keys)))
+          EOF
+          )
+          test "$got" = "SharedOpening,WrongPaper" || { echo "::error::gated $got"; exit 1; }
+          grep -q 'mistitled=2' out.txt
+          # The denominator, so a run that compared nothing cannot read as a run that agreed.
+          grep -q 'titles_compared=10' out.txt
+          grep -q 'title_inconclusive=1' out.txt
+
+      - name: A run that resolved no titles is not a run that agreed
         run: |
-          set -uo pipefail
+          set -euo pipefail
+          : > empty.jsonl
           rc=0
           python3 verify_references_gate.py \
             --bib test/titles/references.bib --allow /dev/null \
-            --github-output off.txt < test/titles/verify.jsonl > /dev/null || rc=$?
+            --titles empty.jsonl --title-allow test/titles/title.allow \
+            --github-output outage.txt < test/titles/verify.jsonl > outage.md || rc=$?
           test "$rc" = "0"
+          grep -q 'titles_compared=0' outage.txt
+          grep -q 'titles compared: \*\*0\*\*' outage.md
+          # …and it must not look like the check being switched off.
+          python3 verify_references_gate.py \
+            --bib test/titles/references.bib --allow /dev/null \
+            --github-output off.txt < test/titles/verify.jsonl > off.md
           grep -q 'mistitled=0' off.txt
+          if diff -q outage.md off.md > /dev/null; then
+            echo "::error::an outage renders identically to the check being off"; exit 1
+          fi
+
+      - name: resolve_titles survives every shape doiget can return
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/test/stub:$PATH"
+          python3 resolve_titles.py --timeout 5 < test/stub/verify.jsonl > got.jsonl
+          diff -u test/stub/expected.jsonl got.jsonl
+          # And with no doiget at all: a reason per entry, not a crash and not silence.
+          env PATH=/usr/bin:/bin python3 resolve_titles.py --timeout 5 \
+            < test/stub/verify.jsonl > nobin.jsonl
+          test "$(grep -c 'doiget not on PATH' nobin.jsonl)" = "5"

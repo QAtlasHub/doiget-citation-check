@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# A stand-in for `doiget cite`, so resolve_titles.py is testable with no network and no
+# binary. Covers the shapes that broke it: a title rendered across many lines, a non-zero
+# exit, and stdout with no title field at all.
+[ "$1" = "cite" ] || { echo "stub: only \`cite\` is implemented" >&2; exit 64; }
+case "$2" in
+  10.0000/oneline) printf '@article{x,\n  title      = {A single line title},\n}\n' ;;
+  10.0000/multiline)
+    printf '@article{x,\n  title      = {Efficient Conversion in Antiferromagnet\n\n      RuO\n    2\n  },\n  year = {2023},\n}\n' ;;
+  10.0000/braces) printf '@article{x,\n  title      = {A study of {\\it Ab Initio} methods},\n}\n' ;;
+  10.0000/notitle) printf '@article{x,\n  year = {1999},\n}\n' ;;
+  10.0000/failing) echo "stub: resolve failed" >&2; exit 3 ;;
+  *) echo "stub: unknown ref $2" >&2; exit 4 ;;
+esac

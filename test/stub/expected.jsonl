@@ -1,0 +1,5 @@
+{"ref": "10.0000/oneline", "title": "A single line title"}
+{"ref": "10.0000/multiline", "title": "Efficient Conversion in Antiferromagnet RuO 2"}
+{"ref": "10.0000/braces", "title": "A study of {\\it Ab Initio} methods"}
+{"ref": "10.0000/notitle", "title": null, "reason": "no title field in the citation"}
+{"ref": "10.0000/failing", "title": null, "reason": "doiget cite exited 3"}

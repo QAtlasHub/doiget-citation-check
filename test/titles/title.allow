@@ -1,2 +1,2 @@
-# Only WrongPaper stays gated; this proves the allowlist is honoured by bibkey.
-Stub  # a stub title is not a wrong paper here, it is missing metadata
+# Only genuine metadata defects belong here.
+Excused  # the registered title itself has a typo: "resonnance"
