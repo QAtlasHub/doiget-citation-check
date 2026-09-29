@@ -173,3 +173,20 @@ jobs:
           env PATH=/usr/bin:/bin python3 resolve_titles.py --timeout 5 \
             < test/stub/verify.jsonl > nobin.jsonl
           test "$(grep -c 'doiget not on PATH' nobin.jsonl)" = "6"
+
+  # The one check `main` requires. Requiring each job by name is how a new job ends up ungated:
+  # `titles` and `encoding` were added after `smoke`, and nothing made them required. This job
+  # fails if any job it needs failed, was cancelled or skipped, so a job added to `needs` is
+  # gated the moment it is added.
+  all:
+    name: All checks passed
+    if: always()
+    needs: [smoke, encoding, titles]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job this gate needs succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do [ "$r" = success ] || exit 1; done
